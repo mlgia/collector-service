@@ -89,7 +89,9 @@ public class DatasetServiceImpl implements DatasetService {
 	private void write(String content, Long timestamp) {
 	    BufferedWriter writer;
 		try {
-			writer = new BufferedWriter(new FileWriter(String.format(outputFile, timestamp)));
+			String path = outputFile.concat(String.format(outputFileName, timestamp));
+			
+			writer = new BufferedWriter(new FileWriter(path));
 		    writer.write(content);
 
 		    writer.close();
