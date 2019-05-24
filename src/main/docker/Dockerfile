@@ -1,4 +1,4 @@
-FROM frolvlad/alpine-java
+FROM openjdk:8-jdk-alpine
 
 VOLUME /tmp
 

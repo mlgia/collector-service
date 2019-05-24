@@ -2,14 +2,29 @@ package es.accenture.mlgia.service.impl;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.ByteArrayInputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URL;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+
+import com.ibm.cloud.objectstorage.ClientConfiguration;
+import com.ibm.cloud.objectstorage.SDKGlobalConfiguration;
+import com.ibm.cloud.objectstorage.auth.AWSCredentials;
+import com.ibm.cloud.objectstorage.auth.AWSStaticCredentialsProvider;
+import com.ibm.cloud.objectstorage.client.builder.AwsClientBuilder.EndpointConfiguration;
+import com.ibm.cloud.objectstorage.oauth.BasicIBMOAuthCredentials;
+import com.ibm.cloud.objectstorage.services.s3.AmazonS3;
+import com.ibm.cloud.objectstorage.services.s3.AmazonS3Builder;
+import com.ibm.cloud.objectstorage.services.s3.AmazonS3ClientBuilder;
+import com.ibm.cloud.objectstorage.services.s3.model.ObjectMetadata;
 
 import es.accenture.mlgia.dto.Parking;
 import es.accenture.mlgia.service.DatasetService;
@@ -18,12 +33,28 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Service
 public class DatasetServiceImpl implements DatasetService {
-	
+
 	@Value("${resource.csv}")
 	private String resource;
 	
 	@Value("${output.file}")
 	private String outputFile;
+	
+	@Value("${output.file.name}")
+	private String outputFileName;
+	
+	@Value("${ibm.cloud.object.storage.bucket}")
+	private String ibmCloudStorageBucket;
+	
+	
+	@Autowired
+	private AmazonS3 cos;
+	
+	private static final String EMPTY = "";
+	
+	private static final String NONE = "None";
+
+	private static final String COMMA_SEPARATOR = ",";
 
 	@Scheduled(fixedDelay = 60000)
 	@Override
@@ -39,15 +70,16 @@ public class DatasetServiceImpl implements DatasetService {
 			String content = reader.lines()
 					.skip(1)
 					.map(line -> lineToParking(line, timestamp))
-					.map(parking -> parkingToLine(parking))
+					.map(this::parkingToLine)
 					.reduce((line1, line2) -> line1 + "\n" + line2)
-					.orElse("");
+					.orElse(EMPTY);
 			
 			reader.close();
 			
 			log.info("Output: \n{}", content);
 			
 			write(content, timestamp);
+			writeToCloudStorage(content, timestamp);
 			
 		} catch (IOException e) {
 			log.error(e.getMessage(), e);
@@ -67,11 +99,28 @@ public class DatasetServiceImpl implements DatasetService {
 	     
 	}
 	
+	private void writeToCloudStorage(String content, Long timestamp) {
+		
+		InputStream stream = new ByteArrayInputStream(content.getBytes());
+		ObjectMetadata metadata = new ObjectMetadata();
+		metadata.setContentType("application/x-java-serialized-object");
+		metadata.setContentLength(content.getBytes().length);
+		
+		cos.putObject(
+				ibmCloudStorageBucket,
+				String.format(outputFileName, timestamp),
+				stream,
+				metadata);
+		
+		
+		
+	}
+	
 	private Parking lineToParking(String line, Long timestamp) {
 		  line = line.replaceAll("\"", "");
-		  String[] p = line.split(",");
+		  String[] p = line.split(COMMA_SEPARATOR);
 		  
-		  Parking item = Parking.builder()
+		  return Parking.builder()
 				  .poiID(getLong(p[0]))
 				  .nombre(getString(p[1]))
 				  .direccion(getString(p[2]))
@@ -91,28 +140,27 @@ public class DatasetServiceImpl implements DatasetService {
 				  .timestamp(timestamp)
 				  .build();
 		  
-		  return item;
 	}
 	
 	private String parkingToLine(Parking parking) {
 		
 		StringBuilder csvLine = new StringBuilder();
 		
-		csvLine.append(parking.getPoiID()).append(",")
-		.append(parking.getNombre()).append(",")
-		.append(parking.getDireccion()).append(",")
-		.append(parking.getTelefono()).append(",")
-		.append(parking.getCorreoelectronico()).append(",")
-		.append(parking.getLatitude()).append(",")
-		.append(parking.getLongitude()).append(",")
-		.append(parking.getAltitud()).append(",")
-		.append(parking.getCapacidad()).append(",")
-		.append(parking.getCapacidad_discapacitados()).append(",")
-		.append(parking.getFechahora_ultima_actualizacion()).append(",")
-		.append(parking.getLibres()).append(",")
-		.append(parking.getLibres_discapacitados()).append(",")
-		.append(parking.getNivelocupacion_naranja()).append(",")
-		.append(parking.getNivelocupacion_rojo()).append(",")
+		csvLine.append(parking.getPoiID()).append(COMMA_SEPARATOR)
+		.append(parking.getNombre()).append(COMMA_SEPARATOR)
+		.append(parking.getDireccion()).append(COMMA_SEPARATOR)
+		.append(parking.getTelefono()).append(COMMA_SEPARATOR)
+		.append(parking.getCorreoelectronico()).append(COMMA_SEPARATOR)
+		.append(parking.getLatitude()).append(COMMA_SEPARATOR)
+		.append(parking.getLongitude()).append(COMMA_SEPARATOR)
+		.append(parking.getAltitud()).append(COMMA_SEPARATOR)
+		.append(parking.getCapacidad()).append(COMMA_SEPARATOR)
+		.append(parking.getCapacidad_discapacitados()).append(COMMA_SEPARATOR)
+		.append(parking.getFechahora_ultima_actualizacion()).append(COMMA_SEPARATOR)
+		.append(parking.getLibres()).append(COMMA_SEPARATOR)
+		.append(parking.getLibres_discapacitados()).append(COMMA_SEPARATOR)
+		.append(parking.getNivelocupacion_naranja()).append(COMMA_SEPARATOR)
+		.append(parking.getNivelocupacion_rojo()).append(COMMA_SEPARATOR)
 		.append(parking.getTimestamp());
 
 		return csvLine.toString();
@@ -121,7 +169,7 @@ public class DatasetServiceImpl implements DatasetService {
 	private Long getLong(String word) {
 		Long l = null;
 		
-		if (word != null && !word.isEmpty() && !word.equals("None")) {
+		if (!StringUtils.isEmpty(word) && !word.equals(NONE)) {
 			l = Long.valueOf(word.trim());
 		}
 		
@@ -131,7 +179,7 @@ public class DatasetServiceImpl implements DatasetService {
 	private Double getDouble(String word) {
 		Double d = null;
 		
-		if (word != null && !word.isEmpty() && !word.equals("None")) {
+		if (!StringUtils.isEmpty(word) && !word.equals(NONE)) {
 			d = Double.valueOf(word);
 		}
 		
@@ -140,7 +188,7 @@ public class DatasetServiceImpl implements DatasetService {
 	
 	private Integer getInteger(String word) {
 		Integer i = null;
-		if (word != null && !word.isEmpty() && !word.equals("None")) {
+		if (!StringUtils.isEmpty(word) && !word.equals(NONE)) {
 			i = Integer.decode(word.trim());
 		}
 		
@@ -149,7 +197,7 @@ public class DatasetServiceImpl implements DatasetService {
 	
 	private String getString(String word) {
 		String s = null;
-		if (word != null && !word.isEmpty()) {
+		if (!StringUtils.isEmpty(word)) {
 			s = word.trim();
 		}
 		
